@@ -5,6 +5,8 @@
 
 # Build outputs
 Save Image.app/
+Save Clipboard.app/
+save_clipboard.app/
 *.dSYM/
 
 # Logs
@@ -13,4 +15,3 @@ Save Image.app/
 # Editors
 .idea/
 .vscode/
-

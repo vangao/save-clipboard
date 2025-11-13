@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Defaults can be overridden via --name and --id, or APP_NAME/ BUNDLE_ID env vars
-APP_NAME=${APP_NAME:-"Save Clipboard"}
+# Default app name requested: save_clipboard.app
+APP_NAME=${APP_NAME:-"save_clipboard"}
 BUNDLE_ID=${BUNDLE_ID:-""}
 
 # Parse simple flags
@@ -36,9 +37,11 @@ echo "Building ${APP_NAME}.app ..."
 
 rm -rf "${APP_DIR}"
 mkdir -p "${MACOS_DIR}" "${RES_DIR}"
+MODULE_CACHE="${APP_DIR}/module_cache"
+mkdir -p "${MODULE_CACHE}"
 
 echo "Compiling Swift binary..."
-swiftc -O -framework AppKit src/main.swift -o "${MACOS_DIR}/${APP_NAME}"
+swiftc -O -module-cache-path "${MODULE_CACHE}" -framework AppKit src/main.swift -o "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
 
 echo "Writing Info.plist..."
@@ -80,29 +83,59 @@ if [[ -f "icon.icns" ]]; then
   echo "Adding icon.icns ..."
   cp -f "icon.icns" "${RES_DIR}/AppIcon.icns"
 elif [[ -f "icon.png" ]]; then
-  echo "Generating .icns from icon.png ..."
-  tmpdir=$(mktemp -d)
-  iconset="${tmpdir}/AppIcon.iconset"
-  mkdir -p "${iconset}"
-  # Generate required sizes
-  sips -z 16 16   icon.png --out "${iconset}/icon_16x16.png" >/dev/null
-  sips -z 32 32   icon.png --out "${iconset}/icon_16x16@2x.png" >/dev/null
-  sips -z 32 32   icon.png --out "${iconset}/icon_32x32.png" >/dev/null
-  sips -z 64 64   icon.png --out "${iconset}/icon_32x32@2x.png" >/dev/null
-  sips -z 128 128 icon.png --out "${iconset}/icon_128x128.png" >/dev/null
-  sips -z 256 256 icon.png --out "${iconset}/icon_128x128@2x.png" >/dev/null
-  sips -z 256 256 icon.png --out "${iconset}/icon_256x256.png" >/dev/null
-  sips -z 512 512 icon.png --out "${iconset}/icon_256x256@2x.png" >/dev/null
-  sips -z 512 512 icon.png --out "${iconset}/icon_512x512.png" >/dev/null
-  cp icon.png "${iconset}/icon_512x512@2x.png"  # 1024x1024 source assumed
-  if iconutil -c icns "${iconset}" -o "${RES_DIR}/AppIcon.icns" 2>/dev/null; then
-    echo "Icon generated."
-  else
-    echo "iconutil not available; skipping icon."
+  echo "Generating .icns from icon.png (Python minimal writer)..."
+  # Prefer a minimal .icns writer to avoid iconutil fragility.
+  # Compose an .icns with a single 1024x1024 PNG as 'ic10'.
+  tmp1024=$(mktemp -t icon1024).png
+  if ! sips -z 1024 1024 icon.png --out "$tmp1024" >/dev/null 2>&1; then
+    echo "sips failed to resize icon.png" >&2
   fi
-  rm -rf "${tmpdir}"
+  python3 - <<'PY' && mv AppIcon.icns "${RES_DIR}/AppIcon.icns" || true
+import struct, sys, os
+src = os.environ.get('SRC','')
+tmp = os.environ.get('TMP1024','')
+path = tmp or 'icon.png'
+with open(path, 'rb') as f:
+    data = f.read()
+# Build minimal icns: header + one 'ic10' entry containing 1024x1024 PNG
+entry_type = b'ic10'
+entry_size = 8 + len(data)
+total_size = 8 + entry_size
+with open('AppIcon.icns', 'wb') as out:
+    out.write(b'icns')
+    out.write(struct.pack('>I', total_size))
+    out.write(entry_type)
+    out.write(struct.pack('>I', entry_size))
+    out.write(data)
+PY
+  rm -f "$tmp1024"
+  if [[ -f "${RES_DIR}/AppIcon.icns" ]]; then
+    echo "Icon generated via Python."
+  else
+    echo "Python method failed; trying iconutil (if available)..."
+    tmpdir=$(mktemp -d)
+    iconset="${tmpdir}/AppIcon.iconset"
+    mkdir -p "${iconset}"
+    sips -z 16 16   icon.png --out "${iconset}/icon_16x16.png" >/dev/null || true
+    sips -z 32 32   icon.png --out "${iconset}/icon_16x16@2x.png" >/dev/null || true
+    sips -z 32 32   icon.png --out "${iconset}/icon_32x32.png" >/dev/null || true
+    sips -z 64 64   icon.png --out "${iconset}/icon_32x32@2x.png" >/dev/null || true
+    sips -z 128 128 icon.png --out "${iconset}/icon_128x128.png" >/dev/null || true
+    sips -z 256 256 icon.png --out "${iconset}/icon_128x128@2x.png" >/dev/null || true
+    sips -z 256 256 icon.png --out "${iconset}/icon_256x256.png" >/dev/null || true
+    sips -z 512 512 icon.png --out "${iconset}/icon_256x256@2x.png" >/dev/null || true
+    sips -z 512 512 icon.png --out "${iconset}/icon_512x512.png" >/dev/null || true
+    cp icon.png "${iconset}/icon_512x512@2x.png" || true
+    if iconutil -c icns "${iconset}" -o "${RES_DIR}/AppIcon.icns" 2>/dev/null; then
+      echo "Icon generated via iconutil."
+    else
+      echo "iconutil failed; continuing without custom icon."
+    fi
+    rm -rf "${tmpdir}"
+  fi
 else
   echo "No icon provided; using generic app icon."
 fi
 
+rm -rf "${MODULE_CACHE}"
 echo "Done: ${APP_DIR}"
